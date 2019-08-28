@@ -330,10 +330,23 @@ class TableWidget(QWidget):
         self.btn_length = QPushButton("Plot Length: "+ str(self.plotupdate.length),self)
         self.grid_tab2_btn.addWidget(self.btn_length,18,1)
         self.btn_length.clicked.connect(self.PlotLength)
+
+        self.btn_refresh = QPushButton("Refresh Status")
+        self.grid.addWidget(self.btn_refresh,0,4)
+        self.btn_refresh.clicked.connect(self.RefreshStatus)
         
         self.statusBar.showMessage("Ready")
 
-        
+
+    def RefreshStatus(self):
+        for i in range(0,16):
+            self.channels[i].menu_range.currentIndexChanged.disconnect(self.channels[i].ChangeRange)
+            self.channels[i].menu_excitation.currentIndexChanged.disconnect(self.channels[i].ChangeExcitation)
+            self.channels[i].Status(self)
+            self.channels[i].menu_range.currentIndexChanged.connect(self.channels[i].ChangeRange)
+            self.channels[i].menu_excitation.currentIndexChanged.connect(self.channels[i].ChangeExcitation)
+        self.statusBar.showMessage("Refreshed")
+
     def PlotLength(self):
         seconds, ok = QInputDialog.getInt(self, 'Plot Length',"Enter the data points to plot (enter 0 for whole data):", 100, 0, 1000, 1 )
         if ok:
