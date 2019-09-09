@@ -5,14 +5,18 @@ import os
 
 from PyQt5.QtWidgets import QMainWindow, QApplication,QPushButton,QGridLayout,QLabel,QWidget,QDialog,QComboBox,QCheckBox,QLineEdit,QInputDialog,QMessageBox,QTabWidget,QAction,QGraphicsView,QGraphicsScene
 from PyQt5 import QtGui
+from PyQt5.Qt import QMutex,QObject
 from PyQt5.QtCore import QThread, pyqtSignal
 import pyqtgraph as pg
+import glob
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 from PyQt5.QtWidgets import QSizePolicy
 
+from datetime import datetime
 import serial
 import serial.tools.list_ports
 import time
@@ -26,8 +30,9 @@ BridgeSerial = serial.Serial()  # open serial port
 #time.sleep(0.5)
 #LARGE_FONT= ("Verdana", 12)
 
-Resistances = {'1':'2.0 m'+u'\u03A9','01':'2.0 m'+u'\u03A9','2':'6.32 m'+u'\u03A9','02':'6.32 m'+u'\u03A9','3':'20.0 m'+u'\u03A9','03':'20.0 m'+u'\u03A9','4':'63.2 m'+u'\u03A9','04':'63.2 m'+u'\u03A9','5':'200 m'+u'\u03A9','05':'200 m'+u'\u03A9','6':'632 m'+u'\u03A9','06':'632 m'+u'\u03A9','7':'2'+u'\u03A9','07':'2'+u'\u03A9','8':'6.32'+u'\u03A9','08':'6.32'+u'\u03A9','9':'20.0'+u'\u03A9','09':'20.0'+u'\u03A9','10':'63.2'+u'\u03A9','11':'200'+u'\u03A9','12':'632'+u'\u03A9','13':'2.00 k'+u'\u03A9','14':'6.32 k'+u'\u03A9','15':'20.0 k'+u'\u03A9','16':'63.2 k'+u'\u03A9','17':'200 k'+u'\u03A9','18':'632 k'+u'\u03A9','19':'2.00 M'+u'\u03A9','20':'6.32 M'+u'\u03A9','21':'20.0 M'+u'\u03A9','22':'63.2 M'+u'\u03A9'}
-Voltages = {'01':'2.00 uV','1':'2.00 uV','02':'6.32 uV','2':'6.32 uV','03':'20.0 uV','3':'20.0 uV','04':'63.2 uV','4':'63.2 uV','05':'200 uV','5':'200 uV','06':'532uV','6':'532uV','07':'2.0 mV','7':'2.0 mV','08':'6.32 mV','8':'6.32 mV','09':'20.0 mV','9':'20.0 mV','10':'63.2 mV','11':'200 mV','12':'632 mV'}
+Resistances = {'1':'2.0 mOhms','01':'2.0 mOhms','2':'6.32 mOhms','02':'6.32 mOhms','3':'20.0 mOhms','03':'20.0 mOhms','4':'63.2 mOhms','04':'63.2 mOhms','5':'200 mOhms','05':'200 mOhms','6':'632 mOhms','06':'632 mOhms','7':'2 Ohms','07':'2 Ohms','8':'6.32 Ohms','08':'6.32 Ohms9','9':'20.0 Ohms','09':'20.0 Ohms','10':'63.2 Ohms','11':'200 Ohms','12':'632 Ohms','13':'2.00 kOhms','14':'6.32 kOhms','15':'20.0 kOhms','16':'63.2 kOhms','17':'200 kOhms','18':'632 kOhms','19':'2.00 MOhms','20':'6.32 MOhms','21':'20.0 MOhms','22':'63.2 MOhms'}
+Voltages = {'01':'2.00 uV','1':'2.00 uV','02':'6.32 uV','2':'6.32 uV','03':'20.0 uV','3':'20.0 uV','04':'63.2 uV','4':'63.2 uV','05':'200 uV','5':'200 uV','06':'632uV','6':'632uV','07':'2.0 mV','7':'2.0 mV','08':'6.32 mV','8':'6.32 mV','09':'20.0 mV','9':'20.0 mV','10':'63.2 mV','11':'200 mV','12':'632 mV'}
+Range = [0.002,0.00632,0.02,0.0632,0.2,0.632,2,6.32,20,63.2,200,632,2000,6320,20000,63200,200000,632000,2000000,6320000,20000000,63200000]
 
 def find_n_sub_str(src, sub, pos, start):
     index = src.find(sub, start)
@@ -35,27 +40,51 @@ def find_n_sub_str(src, sub, pos, start):
         return find_n_sub_str(src, sub, pos - 1, index + 1)
     return index
 
+mutex = QMutex()
+
+class Write(QObject):
+    signal_begin = pyqtSignal(str)
+    
+    def __init__(self,rest):
+        QObject().__init__(self)
+        self.mutex = QMutex()
+        
+    def WriteCMD(self,command):
+        self.mutex.lock()
+        print("Command: "+command)
+        BridgeSerial.write(str.encode(command))
+        readline = BridgeSerial.readline()
+        if command.startswith('RDGRNG '):
+            time.sleep(3)
+        if command.startswith('SCAN '):
+            time.sleep(4)
+        time.sleep(0.1)
+        self.mutex.unlock()
+        return readline
+
+#command = pyqtSignal(str)
 
 
 class BridgeController(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        
+
         self.widget = QWidget()
         self.setCentralWidget(self.widget)
         self.grid = QGridLayout()
         self.widget.setLayout(self.grid)
         self.grid.setSpacing(20)
-        
+
         self.serial_ports_available = []
         self.serial_ports_available = self.SerialPorts()
-        if len(self.serial_ports_available) == 0:
-            self.var_serial_port = ""
-        else:
-            self.var_serial_port = self.serial_ports_available[0]
         self.menu_port = QComboBox(self)
-        self.PortMenu()
+        self.menu_port.addItems(self.serial_ports_available)
+        # if len(self.serial_ports_available) == 0:
+        #     self.var_serial_port = ""
+        # else:
+        #     self.var_serial_port = self.serial_ports_available[0]
+        # self.PortMenu()
         self.initUI()
 
     def initUI(self):
@@ -86,7 +115,7 @@ class BridgeController(QMainWindow):
 
 
 
-        
+
     def PerformancePage(self):
         try:
             self.next_page
@@ -96,7 +125,7 @@ class BridgeController(QMainWindow):
             self.hide()
             self.next_page.show()
             return
-        
+
         if BridgeSerial.is_open:
             self.hide()
             self.next_page = Second(self)
@@ -104,12 +133,14 @@ class BridgeController(QMainWindow):
         else:
             self.statusBar().showMessage('Port is not opened')
 
-    def PortMenu(self):
-        self.menu_port.addItem(str(self.var_serial_port))
-        self.menu_port.activated.connect(self.SetPort)
+    # def PortMenu(self):
+    #     self.menu_port.addItem(str(self.var_serial_port))
+    #     self.menu_port.activated.connect(self.SetPort)
 
     def SetPort(self):
-        BridgeSerial.port = str(self.var_serial_port)
+        if (BridgeSerial.is_open):
+            BridgeSerial.close()
+        BridgeSerial.port = str(self.menu_port.currentText())
         BridgeSerial.baudrate = 9600
         BridgeSerial.timeout = 1
         BridgeSerial.parity = serial.PARITY_ODD
@@ -140,7 +171,7 @@ class BridgeController(QMainWindow):
             ports = glob.glob('/dev/tty.*')
         else:
             raise EnvironmentError('Unsupported platform')
-        result = []
+        result = ['']
         for port in ports:
             try:
                 s = serial.Serial(port)
@@ -151,10 +182,18 @@ class BridgeController(QMainWindow):
         return result
 
     def RollCall(self):
+        self.SetPort()
+
+        
         if BridgeSerial.is_open:
-            BridgeSerial.write(str.encode('*IDN?\n'))
+#            BridgeSerial.write(str.encode('*IDN?\n'))
             try:
-                self.lineinput=BridgeSerial.readline()
+                self.lineinput = write.WriteCMD('*IDN?\n')
+#            time.sleep(0.2)
+#            try:
+#                self.lineinput=BridgeSerial.readline()
+
+
             except serial.SerialException as e:
                 self.label_rollcall.setText("Minion not recognized")
             except Exception as e:
@@ -163,13 +202,13 @@ class BridgeController(QMainWindow):
                 if self.lineinput == "":
                     self.label_rollcall.setText("Minion did not respond to roll call")
                 else:
-                    
+
                     self.label_rollcall.setText(self.lineinput.decode('utf-8').strip())
 
         else:
             self.statusBar().showMessage('Port is not opened')
             pass
-                
+
 class Second(QMainWindow):
      def __init__(self,first_page):
         super().__init__()
@@ -179,7 +218,7 @@ class Second(QMainWindow):
         self.setGeometry(300, 300, 290, 150)
         self.table_widget = TableWidget(self,self.first_page)
         self.setCentralWidget(self.table_widget)
-        
+
         self.show()
 
 
@@ -190,17 +229,17 @@ class TableWidget(QWidget):
         self.parent=parent
         self.statusBar = parent.statusBar()
         self.layout = QGridLayout(self)
-        
+
         # Initialize tab screen
         self.tabs = QTabWidget()
         self.tab1 = QWidget()
         self.tab2 = QWidget()
         self.tabs.resize(300,200)
-        
+
         # Add tabs
         self.tabs.addTab(self.tab1,"Scan")
         self.tabs.addTab(self.tab2,"Plot")
-        
+
         # Create first tab
         self.grid = QGridLayout()
         self.tab1.setLayout(self.grid)
@@ -211,33 +250,33 @@ class TableWidget(QWidget):
         self.tab2.setLayout(self.grid_tab2)
         self.grid_tab2_btn = QGridLayout()
         self.grid_tab2.addLayout(self.grid_tab2_btn,1,1)
-        
+
         # Add tabs to widget
         self.layout.addWidget(self.tabs)
         self.setLayout(self.layout)
-        
+
         self.first_page = first_page
 
         self.grid.setSpacing(20)
         self.readings = 4
         self.logpath = os.path.abspath('.')
 
-        
-         
+
+
         self.initUI()
-        
-        
+
+
     def initUI(self):
-        
+
         self.setWindowTitle('Performance')
-        
+
         self.label_measurement = QLabel(self)
         self.grid.addWidget(self.label_measurement,1,1)
         self.label_measurement.setText("Measurement")
         self.label_measurement.setFont(QtGui.QFont("Times", 12, QtGui.QFont.Bold))
 
-        
-          
+
+
         self.label_channel = QLabel(self)
         self.grid.addWidget(self.label_channel,1,2)
         self.label_channel.setText("Channel")
@@ -252,7 +291,7 @@ class TableWidget(QWidget):
         self.grid.addWidget(self.label_temperature,1,4)
         self.label_temperature.setText("Temperature")
         self.label_temperature.setFont(QtGui.QFont("Times", 12, QtGui.QFont.Bold))
-        
+
         self.label_resistance = QLabel(self)
         self.grid.addWidget(self.label_resistance,1,5)
         self.label_resistance.setText("Resistance Range")
@@ -277,6 +316,11 @@ class TableWidget(QWidget):
         self.grid.addWidget(self.label_method,1,9)
         self.label_method.setText("Method")
         self.label_method.setFont(QtGui.QFont("Times", 12, QtGui.QFont.Bold))
+
+        self.label_autorange = QLabel(self)
+        self.grid.addWidget(self.label_autorange,1,12)
+        self.label_autorange.setText("AutoRange")
+        self.label_autorange.setFont(QtGui.QFont("Times", 12, QtGui.QFont.Bold))
 
         self.channels = []
         for i in range(0,16):
@@ -315,7 +359,7 @@ class TableWidget(QWidget):
             self.file_conversion = open('thermometer.txt',"r")
         except:
             print("Conversion File Lost")
-        else: 
+        else:
             self.lines = self.file_conversion.readlines()
             self.file_conversion.close()
 
@@ -334,17 +378,13 @@ class TableWidget(QWidget):
         self.btn_refresh = QPushButton("Refresh Status")
         self.grid.addWidget(self.btn_refresh,0,4)
         self.btn_refresh.clicked.connect(self.RefreshStatus)
-        
+        self.RefreshStatus()
         self.statusBar.showMessage("Ready")
 
 
     def RefreshStatus(self):
         for i in range(0,16):
-            self.channels[i].menu_range.currentIndexChanged.disconnect(self.channels[i].ChangeRange)
-            self.channels[i].menu_excitation.currentIndexChanged.disconnect(self.channels[i].ChangeExcitation)
             self.channels[i].Status(self)
-            self.channels[i].menu_range.currentIndexChanged.connect(self.channels[i].ChangeRange)
-            self.channels[i].menu_excitation.currentIndexChanged.connect(self.channels[i].ChangeExcitation)
         self.statusBar.showMessage("Refreshed")
 
     def PlotLength(self):
@@ -354,29 +394,34 @@ class TableWidget(QWidget):
         self.btn_length.setText("Plot Length: "+ str(self.plotupdate.length))
         self.statusBar.showMessage("Plot Length changed to "+str(self.plotupdate.length))
 
-            
+
 
 
 
     def ReadMe(self):
-        readme = QMessageBox.information(self,"Read Me","To avoid crash down, please do any operation after status bar gives you feedback!\n Without stop scan, data will not be logged!!!",QMessageBox.Yes )
-        
+        readme = QMessageBox.information(self,"Read Me","To avoid crash down, please do any operation after status bar gives you feedback!",QMessageBox.Yes )
+
 
     def ReadSeconds(self):
-        seconds, ok = QInputDialog.getInt(self, 'Seconds Between Readings',"Enter the seconds between readings", 4, 1, 20, 1 )
+        seconds, ok = QInputDialog.getDouble(self, 'Seconds Between Readings',"Enter the seconds between readings", 4, 0.1, 20, 1 )
         if ok:
             self.readings = seconds
         self.btn_seconds.setText("Seconds Between Readings: "+ str(self.readings))
         self.statusBar.showMessage("Seconds Between Readings Changed to "+str(self.readings))
-    
+
 
     def Back(self):
         self.parent.hide()
         self.first_page.show()
 
     def BeginDAQ(self):
-        self.thread_scan = self.Scan(1,self)
-        self.thread_scan.start()
+        try:
+            self.thread_scan
+        except:
+            self.thread_scan = self.Scan(1,self)
+            self.thread_scan.start()
+        else:
+            self.thread_scan.resume()
 
     def Pause(self):
         try:
@@ -385,10 +430,9 @@ class TableWidget(QWidget):
             pass
         else:
             self.thread_scan.stop()
-            del self.thread_scan
 
 
-        
+
 
     class Scan(QThread):
         signal_pause = pyqtSignal(str)
@@ -399,35 +443,37 @@ class TableWidget(QWidget):
             self.window = window
             self.working = True
             self.times = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
-            
+
 #            open(self.window.line_logpath.text() +'\\'+'Temperature_' + time.strftime('%Y%m%d',time.localtime(int(round(time.time()*1000))/1000)) + '.txt','a' )
-            print((self.window.line_logpath.text() + '\\'+time.strftime('%Y%m%d%H%M%S',time.localtime(int(round(time.time()*1000))/1000)) + '.txt'))
+            print((self.window.line_logpath.text() + '/'+time.strftime('%Y%m%d%H%M%S',time.localtime(int(round(time.time()*1000))/1000)) + '.txt'))
             self.window.statusBar.showMessage("Log File Created")
 
         def stop(self):
             self.window.statusBar.showMessage("Log File Saved")
-            self.logfile.close()
             self.working = False
-            self.wait()
             self.window.statusBar.showMessage("Scan Stopped")
-            
+
+        def resume(self):
+            self.window.statusBar.showMessage("Resume Scan")
+            self.working = True
+
 
         def run(self):
-            while self.working:
+            while True:
                 for i in range(0,16):
                     if self.working:
                         if self.window.channels[i].checkbox_channel.isChecked():
                             self.window.channels[i].DAQ()
                             self.times[i] += 1
-                            print("Scanning CH"+str(i+1))
                             self.log(i)
-                            self.window.statusBar.showMessage("Scaned CH "+str(i+1)+'  '+str(self.times[i]))
+                            print("Scaned CH "+str(i+1)+'  '+str(self.times[i]))
+                            # self.window.statusBar.showMessage("Scaned CH "+str(i+1)+'  '+str(self.times[i]))
                             time.sleep(self.window.readings)
                         else:
-                            time.sleep(0.1)
                             continue
                     else:
-                        break
+                        pass
+                time.sleep(0.1)
 
         def log(self,i):
             now = time.strftime('%Y%m%d%H%M%S',time.localtime(int(round(time.time()*1000))/1000))
@@ -440,10 +486,17 @@ class TableWidget(QWidget):
                 temperature = self.window.channels[i].temperature
             resistance = self.window.channels[i].resistance
             with open(self.window.line_logpath.text() +'\\'+'Temperature_' + time.strftime('%Y%m%d',time.localtime(int(round(time.time()*1000))/1000)) + '.txt','a' ) as self.logfile:
+                if os.stat(self.logfile.name).st_size == 0:
+                    self.logfile.write("Channel\tMeasurement\tResistance\tTemperature\tRes Range\tExcitation\tTime\n")
                 if type(temperature) is float:
-                    self.logfile.write(str(now)+'\t'+'CH'+str(i+1)+'\t'+str("%.6f" % temperature)+' K '+'\n')
-                else:
-                    self.logfile.write(str(now)+'\t'+'CH'+str(i+1)+'\t'+str(temperature)+' K '+'\n')
+                    temperature = "%.6f" % temperature
+                if type(resistance) is float:
+                    resistance = "%.6g" %resistance
+                self.logfile.write(str(i+1) + '\t' + str(measurement) + '\t' + str(resistance)+ ' Ohms' + '\t' + str(temperature) + 'K' + '\t' + self.window.channels[i].menu_range.currentText() + '\t' + self.window.channels[i].menu_excitation.currentText()+ '\t' + datetime.utcnow().isoformat(sep=' ', timespec='milliseconds') + '\n')
+
+        def sleep(self,i):
+            time.sleep(i)
+
 
 
     class PlotUpdate(QThread):
@@ -464,22 +517,35 @@ class TableWidget(QWidget):
             self.working = False
             self.wait()
             self.window.statusBar.showMessage("Scan Stopped")
-            
+
 
         def run(self):
             while True:
-                if self.working:
+                if self.working and (self.window.channels[self.channel-1].temperature) != "Out of Range":
                     self.window.plot.axes.cla()
                     self.window.plot.axes.grid()
-                    self.window.plot.axes.title.set_text("temperature of CH "+str(self.channel))
-                    if len(self.window.channels[self.channel-1].array_temperature) == 0:
+                    self.window.plot.axes.xaxis.set_major_locator(plt.MaxNLocator(2))
+                    mask = []
+                    array_time = []
+                    if (self.window.channels[self.channel-1].menu_thermometer.currentIndex() == 0):
+                        mask = self.window.channels[self.channel-1].array_resistance
+                        array_time = self.window.channels[self.channel-1].array_time
+                        self.window.plot.axes.title.set_text("Resistance of CH "+str(self.channel))
+                    else:
+                        mask = self.window.channels[self.channel-1].array_temperature
+                        self.window.plot.axes.title.set_text("Temperature of CH "+str(self.channel))
+                        array_time = self.window.channels[self.channel-1].array_time_temperature
+                    if len(mask) == 0:
                         pass
                     elif self.length == 0:
-                        self.window.plot.axes.scatter(range(0,len(self.window.channels[self.channel-1].array_temperature)),self.window.channels[self.channel-1].array_temperature,c='k')
-                    elif len(self.window.channels[self.channel-1].array_temperature) < self.length:
-                        self.window.plot.axes.scatter(range(0,len(self.window.channels[self.channel-1].array_temperature)),self.window.channels[self.channel-1].array_temperature,c='k')
+                        self.window.plot.axes.scatter(array_time[-len(mask):],mask,c='k')
+                    elif len(mask) < self.length:
+                        self.window.plot.axes.scatter(array_time[-len(mask):],mask,c='k')
                     else :
-                        self.window.plot.axes.scatter(range(0,len(self.window.channels[self.channel-1].array_temperature[-(self.length+1):-1])),self.window.channels[self.channel-1].array_temperature[-(self.length+1):-1],c='k')                        
+                        if self.length < len(mask):
+                            self.window.plot.axes.scatter(array_time[-(self.length+1):-1],mask[-(self.length+1):-1],c='k')
+                        else:
+                            self.window.plot.axes.scatter(array_time[-len(mask):],mask,c='k')
                     self.window.plot.draw()
                 time.sleep(1)
 
@@ -494,9 +560,11 @@ class TableWidget(QWidget):
             self.temperature = "Out of Range"
             self.array_resistance = []
             self.array_temperature = []
+            self.array_time = []
+            self.array_time_temperature = []
             self.line_measurement = QLineEdit(window)
             window.grid.addWidget(self.line_measurement,channel+1,1,1,1)
-            
+
             self.btn_channel = QPushButton(window)
             window.grid.addWidget(self.btn_channel,channel+1,2)
             self.btn_channel.setText("CH "+str(channel))
@@ -505,7 +573,7 @@ class TableWidget(QWidget):
             self.label_temperature = QLabel(window)
             window.grid.addWidget(self.label_temperature,channel+1,4)
             self.label_temperature.setText("N/A")
-            
+
             self.label_resistance = QLabel(window)
             window.grid.addWidget(self.label_resistance,channel+1,5)
             self.label_resistance.setText("N/A")
@@ -533,24 +601,33 @@ class TableWidget(QWidget):
             self.menu_method.currentIndexChanged.connect(self.ChangeMethod)
 
             self.status = ""
-            self.Status(window)
-            self.menu_excitation.currentIndexChanged.connect(self.ChangeExcitation)
-            self.menu_range.currentIndexChanged.connect(self.ChangeRange)
+            self.menu_excitation.activated.connect(self.ChangeExcitation)
+            self.menu_range.activated.connect(self.ChangeRange)
+#            self.Status(window)
 
             self.btn_plot = QPushButton()
             self.btn_plot.setText("CH "+str(self.channel))
             self.window.grid_tab2_btn.addWidget(self.btn_plot,channel,1)
             self.btn_plot.clicked.connect(self.PlotChannel)
 
+            self.checkbox_autorange = QCheckBox("CH "+str(self.channel),window)
+            window.grid.addWidget(self.checkbox_autorange,channel+1,12)
+            self.checkbox_channel.stateChanged.connect(self.AutorangeChange)
 
-           
+
+
 
         def PlotChannel(self):
             self.window.plotupdate.working = True
             self.window.plotupdate.channel = self.channel
             self.window.plotupdate.start()
 
-        
+        def AutorangeChange(self):
+            if self.checkbox_channel.isChecked():
+                self.window.statusBar.showMessage("Set CH "+str(self.channel)+" Auto Range To On")
+            else:
+                self.window.statusBar.showMessage("Set CH "+str(self.channel)+" Auto Range To Off")  
+
         def StateChange(self):
             if self.checkbox_channel.isChecked():
                 self.window.statusBar.showMessage("Set CH "+str(self.channel)+" To On")
@@ -558,7 +635,7 @@ class TableWidget(QWidget):
                 self.window.statusBar.showMessage("Set CH "+str(self.channel)+" To Off")
 
         def ExcitationMenu(self):
-            
+
             for i in range(1,13):
                 self.menu_excitation.addItem(Voltages[str(i)])
 
@@ -567,45 +644,105 @@ class TableWidget(QWidget):
 
             for i in range(1,23):
                 self.menu_range.addItem(Resistances[str(i)])
-            
+
         def ChangeExcitation(self):
-            self.voltage = self.menu_excitation.currentIndex() + 1        
-            BridgeSerial.write(str.encode('RDGRNG '+str(self.channel)+',0,'+str(self.voltage)+','+str(self.range)+',0'+',0'+'\n'))
+
+
+            
+#            BridgeSerial.write(str.encode('RDGRNG?'+str(self.channel)+'\n'))
+            self.lineinput = write.WriteCMD('RDGRNG?'+str(self.channel)+'\n')          
+#            self.lineinput=BridgeSerial.readline()
+
+
+            self.lineinput = str(self.lineinput)
+            self.range = (self.lineinput[find_n_sub_str(self.lineinput,',',1,0)+1:find_n_sub_str(self.lineinput,',',2,0)])
+            self.voltage = self.menu_excitation.currentIndex() + 1
+            
+#            BridgeSerial.write(str.encode('RDGRNG '+str(self.channel)+',0,'+str(self.voltage)+','+str(self.range)+',0'+',0'+'\n'))
+            write.WriteCMD('RDGRNG '+str(self.channel)+',0,'+str(self.voltage)+','+str(self.range)+',0'+',0'+'\n')
+            
             self.window.statusBar.showMessage("Change CH"+str(self.channel)+" Excitation Voltage to "+Voltages[str(self.voltage)])
-                       
+
+
+
 
         def ChangeRange(self):
-            self.range = self.menu_range.currentIndex() + 1        
-            BridgeSerial.write(str.encode('RDGRNG '+str(self.channel)+',0,'+str(self.voltage)+','+str(self.range)+',0'+',0'+'\n'))
-            self.window.statusBar.showMessage("Change CH"+str(self.channel)+" Resistance Range to "+Resistances[str(self.range)])
+
+#            time.sleep(0.1)
+            self.lineinput = write.WriteCMD('RDGRNG?'+str(self.channel)+'\n')
+#            BridgeSerial.write(str.encode('RDGRNG?'+str(self.channel)+'\n'))
+#            self.lineinput=BridgeSerial.readline()
+            self.lineinput = str(self.lineinput)
+            self.voltage = self.lineinput[find_n_sub_str(self.lineinput,',',0,0)+1:find_n_sub_str(self.lineinput,',',1,0)]
+            self.range = self.menu_range.currentIndex() + 1
+            
+#            BridgeSerial.write(str.encode('RDGRNG '+str(self.channel)+',0,'+str(self.voltage)+','+str(self.range)+',0'+',0'+'\n'))
+            write.WriteCMD('RDGRNG '+str(self.channel)+',0,'+str(self.voltage)+','+str(self.range)+',0'+',0'+'\n')
+            
+#            self.window.statusBar.showMessage("Change CH"+str(self.channel)+" Resistance Range to "+Resistances[str(self.range)])
+
 
         def ChangeMethod(self):
             self.window.statusBar.showMessage("Set CH "+str(self.channel)+" Method To " +self.menu_method.currentText() )
-        
+
         def Click(self):
-#            while True:
-#                random_resistance = random.uniform(5530,69999)
-#                self.resistance = random_resistance
-#                self.RtoT()
-#                print(self.temperature)
-#                if not str(self.temperature).startswith('Out'):
-#                    break
-#            self.label_resistance.setText(str(self.resistance)+u'\u03A9')
-#            self.array_temperature.append(self.temperature)
-#            self.RtoT()
+            
+            scan_channel = write.WriteCMD('SCAN?\n')
+#            BridgeSerial.write(str.encode('SCAN?\n'))
+#            scan_channel = BridgeSerial.readline()
+            
+            scan_channel = int(scan_channel[0:2])
+            if self.channel != scan_channel:
+                
+#                BridgeSerial.write(str.encode('SCAN'+str(self.channel)+',0\n'))
+#                BridgeSerial.readline()
+                write.WriteCMD('SCAN'+str(self.channel)+',0\n')
+                
             self.DAQ()
             self.window.statusBar.showMessage("Scaned CH "+str(self.channel))
 
         def DAQ(self):
-            BridgeSerial.write(str.encode('RDGST?'+str(self.channel)+'\n'))
-            self.work_or_not = BridgeSerial.readline()
+#            time.sleep(0.1)
+            
+            scan_channel = write.WriteCMD('SCAN?\n')
+#            BridgeSerial.write(str.encode('SCAN?\n'))
+#            scan_channel = BridgeSerial.readline()
+
+            scan_channel = int(scan_channel[0:2])
+            if self.channel != scan_channel:
+
+                write.WriteCMD('SCAN '+str(self.channel)+',0\n')
+#                BridgeSerial.write(str.encode('SCAN'+str(self.channel)+',0\n'))
+#                BridgeSerial.readline()
+#                self.window.thread_scan.wait(4000)
+#                time.sleep(4)
+            count = 0
+            if self.checkbox_autorange.isChecked():
+                autorange = self.AutoRange()
+                if (not autorange):
+                    self.window.statusBar.showMessage("AutoRanging")
+                    while (not autorange) and count < 4:
+                        count += 1
+                        autorange = self.AutoRange()
+                    self.window.statusBar.showMessage("AutoRange Finished")
+
+#            BridgeSerial.write(str.encode('RDGST?'+str(self.channel)+'\n'))
+#            self.work_or_not = BridgeSerial.readline()
+            self.work_or_not = write.WriteCMD('RDGST?'+str(self.channel)+'\n')
+            
+            self.Status(self.window)
             if self.work_or_not != b'000\r\n':
                 self.indicator = self.StatusIndicator(self.work_or_not)
                 self.label_resistance.setText(self.indicator)
             else:
-                BridgeSerial.write(str.encode('RDGR?'+str(self.channel)+'\n'))
+#                try:
+#                    BridgeSerial.write(str.encode('RDGR?'+str(self.channel)+'\n'))
+#                except:
+#                    return
+#                try:
+#                    self.lineinput=BridgeSerial.readline()
                 try:
-                    self.lineinput=BridgeSerial.readline()
+                    self.lineinput = write.WriteCMD('RDGR?'+str(self.channel)+'\n')
                 except Exception as e:
                     self.label_resistance.setText("error doing DAQ: "+str(e))
                 else:
@@ -613,52 +750,145 @@ class TableWidget(QWidget):
                         self.label_resistance.setText("Read Resistance Error")
                     else:
                         self.lineinput = self.lineinput.decode('utf-8').strip()
-                        self.resistance = float(self.lineinput[0:self.lineinput.find('E',0)]) * pow(10,int(self.lineinput[self.lineinput.find('E',0)+1:]))
-                        
-                        self.label_resistance.setText(str("%.6f" % self.resistance)+u'\u03A9')
-                        self.RtoT()
-                        if type(self.temperature) is float:
-                            self.array_temperature.append(self.temperature)
+                        try:
+                            self.resistance = float(self.lineinput[0:self.lineinput.find('E',0)]) * pow(10,int(self.lineinput[self.lineinput.find('E',0)+1:]))
+                        except:
+                            return
+                        if type(self.resistance) is float:
+                            if self.resistance < 0 :
+                                self.label_resistance.setText("Read Resistance Error")
+                                return
+                            self.array_resistance.append(self.resistance)
+                            now = datetime.utcnow().isoformat(sep=' ', timespec='milliseconds')
+                            self.array_time.append(now)
+                            self.RtoT()
+                            self.label_resistance.setText(str("%.6g" % self.resistance)+u'\u03A9')
+                            if type(self.temperature) is float:
+                                self.array_temperature.append(self.temperature)
+                                self.array_time_temperature.append(now)
+
+        def AutoRange(self):
+#            BridgeSerial.write(str.encode('RDGST?'+str(self.channel)+'\n'))
+#            status = BridgeSerial.readline()
+            status = write.WriteCMD('RDGST?'+str(self.channel)+'\n')
+            
+            resrange = self.menu_range.currentIndex()
+            print("range "+str(resrange))
+            if status == b'000\r\n':
+                if resrange == 0:
+                    return True
+
+#                BridgeSerial.write(str.encode('RDGR?'+str(self.channel)+'\n'))
+#                lineinput = BridgeSerial.readline()
+                lineinput = write.WriteCMD('RDGR?'+str(self.channel)+'\n')
+            
+                lineinput = lineinput.decode('utf-8').strip()
+                try:
+                    resistance = float(lineinput[0:lineinput.find('E',0)]) * pow(10,int(lineinput[lineinput.find('E',0)+1:]))
+                except:
+                    time.sleep(0.1)
+                    return False
+                else:
+                    pass
+                if resistance < 0 :
+                    return True
+                print(resistance, resrange, Range[resrange-1])
+                if resistance < Range[resrange-1] * 0.9 :
+#                    BridgeSerial.write(str.encode('RDGRNG?'+str(self.channel)+'\n'))
+#                    self.lineinput=BridgeSerial.readline()
+                    self.lineinput = write.WriteCMD('RDGRNG?'+str(self.channel)+'\n')
+                    
+                    self.lineinput = str(self.lineinput)
+                    self.voltage = self.lineinput[find_n_sub_str(self.lineinput,',',0,0)+1:find_n_sub_str(self.lineinput,',',1,0)]
+                    self.range = resrange - 1
+                    print (self.range)
+#                    BridgeSerial.write(str.encode('RDGRNG '+str(self.channel)+',0,'+str(self.voltage)+','+str(self.range+1)+',0'+',0'+'\n'))
+                    write.WriteCMD('RDGRNG '+str(self.channel)+',0,'+str(self.voltage)+','+str(self.range+1)+',0'+',0'+'\n')
+                    self.window.statusBar.showMessage("Change CH"+str(self.channel)+" Resistance Range to "+Resistances[str(self.range)])
+
+
+                    self.menu_range.setCurrentIndex(self.range)
+                    self.Status(self.window)
+#                    time.sleep(4)
+                    return False
+                return True
+            elif status != b'000\r\n':
+                if resrange == 21:
+                    return True
+                else:
+#                    BridgeSerial.write(str.encode('RDGRNG?'+str(self.channel)+'\n'))
+#                    self.lineinput=BridgeSerial.readline()
+                    self.lineinput = write.WriteCMD('RDGRNG?'+str(self.channel)+'\n')
+                    
+                    self.lineinput = str(self.lineinput)
+                    self.voltage = self.lineinput[find_n_sub_str(self.lineinput,',',0,0)+1:find_n_sub_str(self.lineinput,',',1,0)]
+                    self.range = resrange + 1
+#                    BridgeSerial.write(str.encode('RDGRNG '+str(self.channel)+',0,'+str(self.voltage)+','+str(self.range+1)+',0'+',0'+'\n'))
+                    write.WriteCMD('RDGRNG '+str(self.channel)+',0,'+str(self.voltage)+','+str(self.range+1)+',0'+',0'+'\n')
+                    self.window.statusBar.showMessage("Change CH"+str(self.channel)+" Resistance Range to "+Resistances[str(self.range)])
+
+                    self.menu_range.setCurrentIndex(self.range)
+
+                    self.Status(self.window)
+#                    time.sleep(4)
+                    return False
+
 
         def StatusIndicator(self,weight):
             status = ['CS OVL ','VCM OVL ','VMIX OVL ','VDIF OVL ','R. OVER ','R. UNDER ','T. OVER ','T. UNDER ']
             for i in range(0,8):
-                if bin(int(weight.strip().decode('utf-8')))[-(i+1)] == '1':
-                    return status[i]
+                try:
+                    bin(int(weight.strip().decode('utf-8')))[-(i+1)]
+                except:
+                    pass
                 else:
-                    continue
-                    
+                    if bin(int(weight.strip().decode('utf-8')))[-(i+1)] == '1':
+                        return status[i]
+                    else:
+                        continue
+
 
         def Status(self,window):
-            BridgeSerial.write(str.encode('RDGST?'+str(self.channel)+'\n'))
-            self.work_or_not = BridgeSerial.readline()
-            if ( self.work_or_not == b'000\r\n'):
-                BridgeSerial.write(str.encode('RDGRNG?'+str(self.channel)+'\n'))
-                try:
-                    self.lineinput=BridgeSerial.readline()
-                except Exception as e:
-                    self.label_resistance.setText("error : "+str(e))
+#            time.sleep(0.1)
+#            BridgeSerial.write(str.encode('RDGST?'+str(self.channel)+'\n'))
+#            self.work_or_not = BridgeSerial.readline()
+            self.work_or_not = write.WriteCMD('RDGST?'+str(self.channel)+'\n')
+            
+#            BridgeSerial.write(str.encode('RDGRNG?'+str(self.channel)+'\n'))
+#            try:
+#                self.lineinput=BridgeSerial.readline()
+            try:
+                self.lineinput = write.WriteCMD('RDGRNG?'+str(self.channel)+'\n')
+            except Exception as e:
+                self.label_resistance.setText("error : "+str(e))
+            else:
+                if self.lineinput == "":
+                    self.label_resistance.setText("Read Error")
                 else:
-                    if self.lineinput == "":
-                        self.label_resistance.setText("Read Error")
+                    self.lineinput = str(self.lineinput)
+                    self.status = self.lineinput
+                    self.range = (self.lineinput[find_n_sub_str(self.lineinput,',',1,0)+1:find_n_sub_str(self.lineinput,',',2,0)])
+                    try:
+                        int(self.range)
+                    except:
+                        pass
                     else:
-                        self.lineinput = str(self.lineinput)
-                        self.status = self.lineinput
-                        self.range = (self.lineinput[find_n_sub_str(self.lineinput,',',1,0)+1:find_n_sub_str(self.lineinput,',',2,0)])
                         if (int(self.range) <= 22):
                             self.menu_range.setCurrentIndex(int(self.range)-1)
                             self.range = int(self.range)
                         else:
-                            pass
-
-                        self.voltage = self.lineinput[find_n_sub_str(self.lineinput,',',0,0)+1:find_n_sub_str(self.lineinput,',',1,0)]
+                            self.label_resistance.setText("Read Range Error")
+                    self.voltage = self.lineinput[find_n_sub_str(self.lineinput,',',0,0)+1:find_n_sub_str(self.lineinput,',',1,0)]
+                    try:
+                        int(self.voltage)
+                    except:
+                        pass
+                    else:
                         if(int(self.voltage) <= 12):
                             self.menu_excitation.setCurrentIndex(int(self.voltage)-1)
                             self.voltage = int(self.voltage)
                         else:
-                            pass
-            else:
-                pass
+                            self.label_resistance.setText("Read Voltage Error")
 
         def ChangeThermometer(self):
             self.menu_method.clear()
@@ -707,9 +937,12 @@ class TableWidget(QWidget):
             thermometer = [' ','ca04','501','541','x94607','x94606','x30259','x30314','x46547','p14271','30256','sf15','sf05','sf25','pt100','x46545','x48597','x48759']
             for i in range(0,18):
                 self.menu_thermometer.addItem(thermometer[i])
-            
+
 
         def RtoT(self):
+            if self.menu_thermometer.currentIndex() == 0:
+                self.temperature = "N/A"
+                self.label_temperature.setText(str(self.temperature))
             if self.menu_method.currentText() == 'linear interpolation':
                 start = 0
                 end = 0
@@ -763,41 +996,42 @@ class TableWidget(QWidget):
                 x = ((z - zl) - (zu - z))/(zu - zl)
                 for i in range(start[i]+4,end[i]):
                     coe.append(float(self.window.lines[i].split('\t')[1]))
-                    print(float(self.window.lines[i].split('\t')[1]))
                 T = 0
                 for i in range(0,len(coe)):
                     T = T + coe[i]*math.cos(i*math.acos(x))
-                    print (T)
                 self.temperature = T
                 self.label_temperature.setText(str("%.6f" % self.temperature)+" K")
 
 
 class Plot(FigureCanvas):
- 
+
     def __init__(self, parent=None, width=10, height=8, dpi=100):
 
         self.length = 100
- 
-        self.fig = Figure(figsize=(width, height), dpi=dpi) 
- 
+
+        self.fig = Figure(figsize=(width, height), dpi=dpi)
+
         self.axes = self.fig.add_subplot(1, 1, 1)
         self.axes.title.set_text("temperature")
-        self.axes.grid()
- 
+#        self.axes.xaxis.set_major_locator(ticker.MultipleLocator(1000))
+#        self.axes.xaxis.set_minor_locator(ticker.MultipleLocator(100))
+        self.axes.locator_params(nbins=3, axis='x')
+        #self.axes.grid()
+
         FigureCanvas.__init__(self, self.fig)
         self.setParent(parent)
- 
- 
-        FigureCanvas.setSizePolicy(self, 
-                                        QSizePolicy.Expanding, 
+
+
+        FigureCanvas.setSizePolicy(self,
+                                        QSizePolicy.Expanding,
                                         QSizePolicy.Expanding)
         FigureCanvas.updateGeometry(self)
 
-        
 
 
-                
-            
+
+
+
 if __name__ == '__main__':
 
     app = QApplication(sys.argv)
@@ -805,6 +1039,7 @@ if __name__ == '__main__':
     Controller = BridgeController()
 
     Controller.show()
-    
-    
+
+
     sys.exit(app.exec_())
+ 
